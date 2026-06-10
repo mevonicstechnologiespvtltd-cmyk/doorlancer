@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Doorlance",
+    "slug": "doorlance",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#1a73e8"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.doorlance.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera access is needed to add family member photos"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1a73e8"
+      },
+      "package": "com.doorlance.app",
+      "permissions": ["CAMERA", "NOTIFICATIONS"]
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#1a73e8"
+        }
+      ]
+    ],
+    "web": {
+      "bundler": "webpack"
+    }
+  }
+}
