@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
+
+// In-memory snapshot cache: machineId -> { base64, timestamp }
+// ESP-CAM pushes images here; app reads the latest instead of backend pulling from local IP
+const lastSnapshots = {};
 const { getDb } = require('../config/firebase');
 const { authenticateUser } = require('../middleware/auth');
 const { detectHuman, matchFace } = require('../services/groqService');
@@ -99,6 +103,9 @@ router.post('/motion-detected', upload.single('image'), async (req, res) => {
         }
         const machineData = machineDoc.data();
         const base64Image = req.file.buffer.toString('base64');
+
+        // Cache this frame so /capture can serve it (backend can't reach ESP-CAM local IP from cloud)
+        lastSnapshots[machineId] = { base64: base64Image, timestamp: new Date().toISOString() };
 
         console.log(`[Camera] Image received for ${machineId} (${req.file.size} bytes) — checking family members...`);
 
@@ -221,7 +228,26 @@ router.post('/motion-detected', upload.single('image'), async (req, res) => {
     }
 });
 
-// GET /api/camera/capture/:machineId - Request on-demand capture
+// POST /api/camera/push-snapshot - ESP-CAM pushes a snapshot (fast, no AI, just caches for app)
+router.post('/push-snapshot', upload.single('image'), async (req, res) => {
+    try {
+        const machineId = req.body.machineId;
+        if (!machineId || !req.file) {
+            return res.status(400).json({ error: 'Machine ID and image required' });
+        }
+        lastSnapshots[machineId] = {
+            base64: req.file.buffer.toString('base64'),
+            timestamp: new Date().toISOString(),
+        };
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('Push snapshot error:', err);
+        res.status(500).json({ error: 'Failed to store snapshot' });
+    }
+});
+
+// GET /api/camera/capture/:machineId - Returns latest cached snapshot from ESP-CAM push
+// (ESP-CAM local IP is unreachable from Railway cloud; ESP-CAM pushes images to us instead)
 router.get('/capture/:machineId', async (req, res) => {
     try {
         const { machineId } = req.params;
@@ -234,27 +260,20 @@ router.get('/capture/:machineId', async (req, res) => {
         }
 
         const machineData = machineDoc.data();
-
-        if (!machineData.captureUrl || machineData.espcamStatus !== 'online') {
-            return res.status(503).json({ error: 'Camera is not available' });
+        if (machineData.espcamStatus !== 'online') {
+            return res.status(503).json({ error: 'Camera is offline' });
         }
 
-        // Fetch image from ESP-CAM
-        const fetch = (await import('node-fetch')).default;
-        const response = await fetch(machineData.captureUrl, { timeout: 10000 });
-
-        if (!response.ok) {
-            return res.status(502).json({ error: 'Failed to capture from camera' });
+        const snap = lastSnapshots[machineId];
+        if (snap) {
+            return res.json({
+                image: `data:image/jpeg;base64,${snap.base64}`,
+                timestamp: snap.timestamp,
+            });
         }
 
-        const buffer = await response.buffer();
-        const base64 = buffer.toString('base64');
-
-        res.json({
-            image: `data:image/jpeg;base64,${base64}`,
-            captureUrl: machineData.captureUrl,
-            streamUrl: machineData.streamUrl,
-        });
+        // ESP-CAM is online but no frame has arrived yet (happens briefly after startup)
+        return res.status(503).json({ error: 'Camera warming up, please try again in a few seconds' });
     } catch (err) {
         console.error('Capture error:', err);
         res.status(500).json({ error: 'Capture failed' });
