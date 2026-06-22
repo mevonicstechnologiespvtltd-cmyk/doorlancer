@@ -4,6 +4,17 @@ const { getDb } = require('../config/firebase');
 const { authenticateUser, verifyMachineOwnership } = require('../middleware/auth');
 const { sendCommandToDevice, broadcastToApps } = require('../services/websocketService');
 
+async function sendWithRetry(machineId, device, payload, timeoutMs = 6000) {
+    let sent = sendCommandToDevice(machineId, device, payload);
+    if (sent) return true;
+    const deadline = Date.now() + timeoutMs;
+    while (!sent && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 500));
+        sent = sendCommandToDevice(machineId, device, payload);
+    }
+    return sent;
+}
+
 // POST /api/door/unlock - Unlock the door
 router.post('/unlock', authenticateUser, async (req, res) => {
     try {
@@ -12,8 +23,8 @@ router.post('/unlock', authenticateUser, async (req, res) => {
             return res.status(400).json({ error: 'Machine ID required' });
         }
 
-        // Send unlock command to ESP32 via WebSocket
-        const sent = sendCommandToDevice(machineId, 'esp32_controller', {
+        // Retry for up to 6s — ESP32 may be briefly reconnecting after audio upload
+        const sent = await sendWithRetry(machineId, 'esp32_controller', {
             command: 'unlock',
             autoRelock: false,
             initiatedBy: 'app',
@@ -23,7 +34,6 @@ router.post('/unlock', authenticateUser, async (req, res) => {
             return res.status(503).json({ error: 'ESP32 is not connected' });
         }
 
-        // Log the action
         const db = getDb();
         await db.collection('activity_logs').add({
             machineId,
@@ -32,7 +42,6 @@ router.post('/unlock', authenticateUser, async (req, res) => {
             timestamp: new Date().toISOString(),
         });
 
-        // Update door status
         await db.collection('machines').doc(machineId).update({
             doorLocked: false,
             lastActivity: new Date().toISOString(),
@@ -53,7 +62,8 @@ router.post('/lock', authenticateUser, async (req, res) => {
             return res.status(400).json({ error: 'Machine ID required' });
         }
 
-        const sent = sendCommandToDevice(machineId, 'esp32_controller', {
+        // Retry for up to 6s — ESP32 may be briefly reconnecting after audio upload
+        const sent = await sendWithRetry(machineId, 'esp32_controller', {
             command: 'lock',
             initiatedBy: 'app',
         });
@@ -91,7 +101,6 @@ router.get('/status/:machineId', async (req, res) => {
         const machineDoc = await db.collection('machines').doc(machineId).get();
 
         if (!machineDoc.exists) {
-            // Return default status if machine not yet in Firestore
             return res.json({
                 machineId,
                 doorLocked: true,
