@@ -6,7 +6,25 @@ const connectedDevices = new Map();
 const connectedApps = new Map();
 
 function setupWebSocket(wss) {
+    // Send WebSocket PING frames every 20s to keep Railway's reverse proxy alive.
+    // Without this, Railway drops idle WS connections after ~30s.
+    const pingInterval = setInterval(() => {
+        wss.clients.forEach((ws) => {
+            if (ws.isAlive === false) {
+                ws.terminate();
+                return;
+            }
+            ws.isAlive = false;
+            ws.ping();
+        });
+    }, 20000);
+
+    wss.on('close', () => clearInterval(pingInterval));
+
     wss.on('connection', (ws, req) => {
+        ws.isAlive = true;
+        ws.on('pong', () => { ws.isAlive = true; });
+
         console.log('[WS] New connection from:', req.socket.remoteAddress);
 
         let deviceInfo = null;
@@ -71,6 +89,12 @@ function setupWebSocket(wss) {
                     connectedDevices.delete(`${deviceInfo.machineId}_${deviceInfo.device}`);
                     console.log(`[WS] Device disconnected: ${deviceInfo.device} (${deviceInfo.machineId})`);
                     updateDeviceStatus(deviceInfo.machineId, deviceInfo.device, 'offline');
+                    broadcastToApps(deviceInfo.machineId, {
+                        type: 'device_status',
+                        machineId: deviceInfo.machineId,
+                        esp32Status: deviceInfo.device === 'esp32_controller' ? 'offline' : undefined,
+                        espcamStatus: deviceInfo.device === 'espcam' ? 'offline' : undefined,
+                    });
                 }
             }
         });
@@ -124,6 +148,14 @@ async function handleDeviceRegistration(ws, message) {
 
     ws.send(JSON.stringify({ type: 'registered', message: `${device} registered successfully` }));
     console.log(`[WS] Device registered: ${device} (${machineId})`);
+
+    // Tell all connected apps that this device just came online
+    broadcastToApps(machineId, {
+        type: 'device_status',
+        machineId,
+        esp32Status: device === 'esp32_controller' ? 'online' : undefined,
+        espcamStatus: device === 'espcam' ? 'online' : undefined,
+    });
 }
 
 function handleAppConnection(ws, message) {

@@ -155,6 +155,14 @@ export default function DashboardScreen({ navigation, machineId, machineName }) 
                 ]
             );
             loadUnreadCount();
+        } else if (data.type === 'device_status') {
+            setStatus(prev => {
+                if (!prev) return prev;
+                const update = {};
+                if (data.esp32Status !== undefined) update.esp32Status = data.esp32Status;
+                if (data.espcamStatus !== undefined) update.espcamStatus = data.espcamStatus;
+                return { ...prev, ...update };
+            });
         } else if (data.type === 'command_response') {
             if (data.command === 'unlock') {
                 setStatus(prev => prev ? { ...prev, doorLocked: false } : prev);
